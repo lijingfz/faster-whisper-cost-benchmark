@@ -59,6 +59,9 @@ python aggregate_report.py --results-dir results
    内置 `prices.json`。
 4. **成本与报告**：算出 $/audio-hour、每 1000 音频小时成本，输出 JSON + Markdown。
 
+> RTF 的精确计算方式与最优 batch_size 的寻优算法（饱和提前停止、OOM 边界处理等）
+> 详见 [docs/RTF-LOGIC.md](docs/RTF-LOGIC.md)。
+
 ---
 
 ## 为什么固定 float16 + 每机器各自最优 batch
