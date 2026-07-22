@@ -80,7 +80,7 @@ python aggregate_report.py --results-dir results
 
 ```bash
 python benchmark.py \
-  --batch-sizes 1,4,8,16,24,32,48 \  # 候选 batch（强卡可上探更大）
+  --batch-sizes 1,4,8,16,24,32,48,64,96,128 \  # 候选 batch（默认已覆盖 Blackwell 上探区间）
   --runs 3 \                          # 每档计时次数取中位数
   --price 2.52 \                      # 手动指定 On-Demand 时价（最高优先级）
   --exhaustive \                      # 不因饱和提前停止，扫全部候选

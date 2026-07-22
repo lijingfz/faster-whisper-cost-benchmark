@@ -30,7 +30,7 @@ from src.bench_core import sweep_batch_sizes, pick_optimal, transcribe_once  # n
 
 DEFAULT_MODEL = "large-v3"
 DEFAULT_COMPUTE_TYPE = "float16"
-DEFAULT_BATCH_SIZES = "1,4,8,16,24,32,48"
+DEFAULT_BATCH_SIZES = "1,4,8,16,24,32,48,64,96,128"
 DEFAULT_AUDIO = os.path.join(HERE, "audio", "benchmark-audio.mp3")
 
 
