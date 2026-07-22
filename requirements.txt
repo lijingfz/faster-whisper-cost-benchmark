@@ -1,0 +1,5 @@
+# faster-whisper ASR 成本基准 依赖
+# torch 需按 GPU 架构选择 CUDA wheel，见 setup.sh / README（勿在此固定 torch）。
+faster-whisper>=1.2.1
+# 可选：启用 AWS Pricing API 实时价格（无凭证时自动回退到 prices.json）
+boto3>=1.34

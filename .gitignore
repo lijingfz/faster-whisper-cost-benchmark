@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# 运行产物
+results/*.json
+results/*.md
+!results/.gitkeep
+benchmark_raw.json
+*.log
+
+# 生成的长音频（保留 base 样本，忽略拼接产物）
+audio/benchmark-audio.mp3
+audio/_concat_list.txt
+
+# 模型缓存
+*.bin
+.cache/

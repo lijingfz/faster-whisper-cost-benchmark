@@ -1,0 +1,35 @@
+{
+  "_comment": "内置 On-Demand 价格回退表。运行时优先用 --price，其次 AWS Pricing API，最后才用本表。价格会随时间/区域变动，请以 last_verified 为准并定期核对 https://aws.amazon.com/ec2/pricing/on-demand/",
+  "currency": "USD",
+  "unit": "per_hour",
+  "last_verified": "2026-07-22",
+  "default_region": "us-east-1",
+  "instances": {
+    "g5.2xlarge": {
+      "gpu": "NVIDIA A10G",
+      "vram_gb": 24,
+      "on_demand_usd_per_hour": { "us-east-1": 1.212 }
+    },
+    "g6.2xlarge": {
+      "gpu": "NVIDIA L4",
+      "vram_gb": 24,
+      "on_demand_usd_per_hour": { "us-east-1": 0.9776 }
+    },
+    "g6e.2xlarge": {
+      "gpu": "NVIDIA L40S",
+      "vram_gb": 48,
+      "on_demand_usd_per_hour": { "us-east-1": 2.2421 }
+    },
+    "g7.2xlarge": {
+      "gpu": "NVIDIA RTX PRO 4500 Blackwell Server Edition",
+      "vram_gb": 32,
+      "_note": "G7 于 2026-06-18 GA，首发区 us-east-2 (Ohio)",
+      "on_demand_usd_per_hour": { "us-east-2": 2.52 }
+    },
+    "g7e.2xlarge": {
+      "gpu": "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+      "vram_gb": 96,
+      "on_demand_usd_per_hour": { "us-east-1": 3.3631 }
+    }
+  }
+}
