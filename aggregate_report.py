@@ -61,18 +61,20 @@ def main():
     lines.append("> 场景：离线批量吞吐 ｜ 指标：每音频小时成本 = On-Demand 时价 ÷ 最优 RTF")
     lines.append("> 性价比指数 = 该实例成本 ÷ 最低成本（1.00 = 最划算）")
     lines.append("")
-    lines.append("| 实例 | GPU | 显存 | 最优bs | RTF(倍速) | On-Demand $/hr | "
+    lines.append("| 实例 | GPU | 显存 | 显存利用率 | 最优bs | RTF(倍速) | On-Demand $/hr | "
                  "**$/audio-hr** | 每1000音频小时$ | 性价比指数 | 价格来源 |")
-    lines.append("|---|---|---:|---:|---:|---:|---:|---:|---:|---|")
+    lines.append("|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---|")
     for d in data:
         g = d.get("gpu", {})
         opt = d.get("optimal") or {}
+        ad = d.get("adaptive", {})
         price = d.get("price", {}).get("on_demand_usd_per_hour")
         cost = d.get("cost_per_audio_hour_usd")
         idx = (cost / cheapest) if (cost is not None and cheapest) else None
         lines.append(
             f"| {d['instance_type']} | {g.get('name', '?')} | "
             f"{fmt(g.get('total_vram_gib'), '.0f')}GiB | "
+            f"{fmt(ad.get('vram_utilization'), '.0%')} | "
             f"{opt.get('batch_size', '—')} | {fmt(opt.get('rtf'), '.1f')} | "
             f"{fmt(price, '.4f')} | **{fmt(cost, '.4f')}** | "
             f"{fmt(cost * 1000 if cost is not None else None, '.2f')} | "

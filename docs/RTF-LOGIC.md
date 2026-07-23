@@ -1,7 +1,8 @@
-# RTF 计算与最优 batch_size 寻优逻辑详解
+# RTF 计算与自适应显存占满寻优逻辑详解
 
-本文详细说明本项目中 RTF（Real-Time Factor，实时率）的计算方式，以及"如何获得最佳
-RTF"的完整搜索逻辑。相关实现集中在 `src/bench_core.py` 与 `benchmark.py`。
+本文详细说明本项目中 RTF（Real-Time Factor，实时率）的计算方式，以及**自适应把显存
+推到极限**（占满 ~90% 或 OOM 打爆）后测 RTF / 成本 / 耗时的完整逻辑。相关实现集中在
+`src/bench_core.py`、`benchmark.py` 与 `prepare_audio.py`。
 
 ---
 
@@ -28,13 +29,19 @@ RTF = 50x。
 ## 二、分子：音频时长
 
 `benchmark.py` 中的 `ffprobe_duration()` 调用 ffprobe 读取音频容器的 duration，
-得到 `audio_duration_s`。整个基准过程中它是固定常数（默认约 600 秒）。
+得到 `audio_duration_s`。在一轮扫描内它是固定常数；但在自适应流程里，若发生「段饥饿」
+（见第五节），音频会被重新拼长，`audio_duration_s` 随之更新。
 
-**为什么音频要拼接到约 600 秒**（见 `prepare_audio.py`）：
+**为什么音频要足够长**（见 `prepare_audio.py`）：
 `BatchedInferencePipeline` 先用 VAD 把长音频切成语音段，再按 batch_size 并行送入
-GPU 解码。音频太短则切出的段数少于 batch_size，大 batch「填不满」，测不出真实
-吞吐。同时 RTF 是比值，与音频绝对长度无关——只要所有实例用同一份音频，跨机
-对比即公平。
+GPU 解码。`large-v3` 按 30s 窗口工作，**音频太短则切出的段数少于 batch_size**，大
+batch「填不满」——不仅测不出真实吞吐，显存也会在远未到硬件极限时就走平（**段饥饿**，
+segment starvation）。RTF 是比值，与音频绝对长度无关，只要同一次对比里各实例用同一
+份（或等价生成规则的）音频即可公平比较。
+
+> 实测例：275.5s 的 base 音频只拼到 3×（826s）时，G7 在 batch_size≥32 后显存卡在
+> 13/31GiB、RTF 卡在 ~132x 不动——这是段饥饿造成的**假平台**，会低估强卡。改用
+> 32× 起步、并在需要时自适应加长，才能把显存推到真实极限。（当前默认 20× 起步）
 
 ## 三、分母：墙钟耗时的测量
 
@@ -64,92 +71,88 @@ elapsed = time.perf_counter() - t0
 | 手段 | 位置 | 作用 |
 |---|---|---|
 | 预热运行（不计入结果） | `benchmark.py` | 排除 CUDA context 初始化、kernel 编译、显存分配等一次性开销 |
-| 每档跑 `--runs` 次取**中位数**（默认 3 次） | `sweep_batch_sizes()` | 中位数对偶发抖动比平均数更稳健 |
+| 每档跑 `--runs` 次取**中位数**（默认 1 次） | `sweep_batch_sizes()` | 中位数对偶发抖动比平均数更稳健 |
 | 固定语种 `--language en` | `benchmark.py` | 跳过每次运行的语种自动检测，消除该部分耗时波动 |
 
-测量期间另有 `GpuMemSampler` 后台线程以 50ms 间隔采样显存峰值，运行在独立
-Python 线程上，对 GPU 计时的干扰可忽略。
+测量期间另有 `GpuMemSampler` 后台线程以 50ms 间隔用 `torch.cuda.mem_get_info()`
+做**设备级**显存采样，记录峰值——可捕获 CTranslate2 在 torch 缓存分配器之外分配的
+显存。它运行在独立 Python 线程，对 GPU 计时的干扰可忽略。
 
 ---
 
-## 五、如何获得最佳 RTF：batch_size 一维扫描
+## 五、自适应显存占满：把 GPU 推到极限
 
-### 5.1 为什么 batch_size 是唯一的搜索变量
+本项目的目标不是「浅尝辄止找 RTF 拐点」，而是**把显存推到物理极限（占满 ~90% 或
+OOM 打爆），并在该状态下测 RTF / 耗时 / 成本**。为此有两个维度的自动上探：
 
-RTF 随 batch_size 变化的物理机制：pipeline 每次取 batch_size 个 VAD 语音段并行
-送入 GPU 解码。batch 越大，GPU 并行单元填得越满、单位开销摊得越薄，RTF 上升；
-直到 GPU 算力饱和，曲线走平；再往上只增加显存占用甚至 OOM。因此
-**RTF-batch 曲线是「先陡升、后平台」的单峰形状，最佳 RTF 就在平台起点附近**。
+1. **batch 维度**（`sweep_batch_sizes(..., saturate=True)`）：一路增大 batch 直到显存打满/打爆。
+2. **音频维度**（`benchmark.py` 的自适应闭环）：当 batch 已无法再推高显存却仍未占满
+   （段饥饿）时，自动加长音频再来一轮。
 
-其他影响 RTF 的变量都被刻意固定，以保证搜索只有一维：
+### 5.1 batch 一维上探（saturate 模式）
 
-- 模型固定 `large-v3`，精度固定 `float16`（跨实例公平，且 Blackwell 上 INT8 不可用）
-- 语种固定 `en`（跳过检测）
-- 音频固定为同一份约 600 秒的拼接文件
+显存与 RTF 随 batch_size 变化的物理机制：pipeline 每次取 batch_size 个 VAD 语音段
+并行送入 GPU 解码。batch 越大，并行单元填得越满、显存占用越高、RTF 上升；直到显存
+接近上限（OOM 边界）或语音段被取空。
 
-### 5.2 扫描算法（`sweep_batch_sizes()`）
+`sweep_batch_sizes` 在 `saturate=True` 时：
 
-按升序逐档测试候选列表（默认见 `benchmark.py` 的 `DEFAULT_BATCH_SIZES`），
-对每一档：
+- **关闭 RTF 饱和提前停止**（不因 RTF 走平就收手，目标是推显存）。
+- 先按 `--batch-sizes` 给定的候选（默认 `1,4,8,16,32,48,64,80,96`）逐档测。
+- 扫到候选末尾后**动态追加更大 batch**：若最大档显存相对上一档仍上涨
+  （> `vram_plateau_epsilon`，默认 3%），追加 `batch×2` 继续；直到
+  - 抛出 **CUDA OOM** → 标记该档 `oom`，停止（显存已打爆，达到硬件极限）；或
+  - 显存**不再随 batch 上涨**（平台）→ 停止上探（再大也没用）；或
+  - 触及 `--max-batch`（默认 1024）安全上限。
 
-**测量**：跑 `runs` 次，取中位耗时，算出该档 RTF 与峰值显存。
+### 5.2 显存饱和汇总（`summarize_sweep()`）
 
-**异常分流**：
-- 抛出 **CUDA OOM** → 标记该档 `oom`，**终止整个扫描**。依据：显存占用随
-  batch 单调递增，更大的档必然也 OOM。
-- 抛出**其他错误** → 标记 `error`，跳过该档继续测下一档（偶发错误不应终结
-  整个基准）。
+一轮扫描结束后，用 `SweepSummary` 汇总：
 
-**饱和提前停止**（高效寻优的核心）：
+| 字段 | 含义 |
+|---|---|
+| `oom` | 是否触发过 OOM（显存被打爆） |
+| `peak_vram_gib` | 本轮所有档位的最大峰值显存 |
+| `vram_utilization` | `peak_vram / 总显存` |
+| `saturated` | `oom` 或 `vram_utilization ≥ vram_target_frac`（默认 0.90） |
+| `vram_climbing` | 最后两个 ok 档显存仍在上涨（可继续靠 batch 推高） |
+| `starved` | **未饱和 且 显存已平台** ⇒ 语音段不足，需要加长音频 |
 
-```python
-if res.rtf and res.rtf > best_rtf * (1 + early_stop_epsilon):
-    best_rtf = max(best_rtf, res.rtf)
-    stagnant = 0                # 有显著提升，重置计数
-else:
-    best_rtf = max(best_rtf, res.rtf or 0.0)
-    stagnant += 1               # 无显著提升，累计一次「停滞」
-    if stagnant >= early_stop_patience:
-        break                   # 连续停滞达到耐心值，判定饱和
+### 5.3 音频维度自适应（`benchmark.py` 闭环）
+
+```
+multiplier = 20                       # 起始音频 = base × 20（默认）
+loop (最多 --max-iterations 轮):
+    生成 base × multiplier 的音频
+    results = sweep_batch_sizes(..., saturate=True)
+    summary = summarize_sweep(results, 总显存, vram_target_frac=0.90)
+    if summary.saturated:             # 已占满(≥90%)或 OOM 打爆
+        break                         # 完成
+    if summary.starved:               # 显存平台却没占满 => 段饥饿
+        multiplier *= audio_grow_factor   # 音频 ×2，重扫
+    else:
+        break                         # 非段饥饿(batch 已探顶等)，停止
+    受 --max-audio-multiplier / --max-iterations 限制
 ```
 
-两个设计细节：
+**为什么段饥饿要加长音频而不是继续加 batch**：显存在增大 batch 时不再上涨，说明
+可用语音段已被取空、批次填不满，再加 batch 也是空转。此时唯一能提高 GPU 占用的
+办法是提供更多语音段，即把音频拼得更长。
 
-1. **比较基准是「历史最佳 RTF」，不是「上一档」**。新档必须比迄今最好成绩再高出
-   `epsilon`（默认 2%）才算「有提升」。这能正确处理平台期曲线小幅抖动的情况——
-   比上一档高一点但没超过历史最佳，仍算停滞。
-2. **`patience=2` 容忍一次偶然停滞**。单档停滞可能只是测量噪声；连续两档都挤
-   不出 2% 提升，才判定真的到了平台。`--exhaustive` 会将 patience 设为极大值，
-   等效关闭此机制、强制扫全部候选。
+### 5.4 两个最优档的选取
 
-### 5.3 最终选取（`pick_optimal()`）
+同一份扫描数据同时给出两个视角（`src/bench_core.py`）：
 
 ```python
-ok = [r for r in results if r.status == "ok" and r.rtf]
-return max(ok, key=lambda r: r.rtf)
+pick_optimal(results)      # 成本最优 ⭐：RTF 最大的 ok 档（$/audio-hour 最低）
+pick_saturating(results)   # 显存占满 🔥：峰值显存最大的 ok 档
 ```
 
-在所有**成功**档位里取 RTF 最大者。注意：**最佳档不一定是最后测的那档**——
-提前停止要求多测 2 个停滞档才收手，峰值往往出现在倒数第三档；`pick_optimal`
-对全体结果取 max，自然选回真正的峰值。OOM / error 档位一律排除，即 OOM 是
-**安全边界**而非搜索目标。
+- **成本最优 ⭐**：因为 `$/audio-hour = 时价 / RTF`，RTF 最大即单位成本最低。
+- **显存占满 🔥**：报告 GPU 吃得最满那一档的 RTF / 耗时 / 成本，回答「把卡用满时
+  能跑多快、多划算」。
 
-### 5.4 示例：典型 L4（g6 实例）走查
-
-假设实测曲线如下（epsilon=2%，patience=2）：
-
-| batch_size | RTF | 判断 |
-|---:|---:|---|
-| 1 | 6x | 提升，best=6 |
-| 4 | 20x | 20 > 6×1.02，提升，best=20 |
-| 8 | 34x | 提升，best=34 |
-| 16 | 41x | 提升，best=41 |
-| 24 | 41.5x | 41.5 < 41×1.02=41.8，**停滞 1** |
-| 32 | 40x | **停滞 2 → 触发饱和停止** |
-
-更大的档不再运行。`pick_optimal` 从 6 个结果取 max →
-**最优 batch_size=24，RTF=41.5x**（虽然扫描在 32 停止）。更强的卡（如 Blackwell）
-饱和点靠后，扫描会自然走到更大的候选档。
+报告（`src/report.py`）对两者都给出 RTF、中位推理耗时、峰值显存与每音频小时成本。
 
 ---
 
@@ -158,24 +161,31 @@ return max(ok, key=lambda r: r.rtf)
 `src/report.py` 中：
 
 ```python
-cost_per_audio_hour = price_per_hour / optimal.rtf
+cost_per_audio_hour = price_per_hour / r.rtf
 ```
 
 推导：RTF = 每墙钟小时可转写的音频小时数 ⇒ 转写 1 小时音频需要 `1/RTF` 个
 机器小时 ⇒ 乘以实例时价即每音频小时成本。**时价固定时，RTF 最大即单位成本
-最低**——这正是 batch 寻优的目标函数。
+最低**——这正是成本最优档的目标函数。报告同时给出成本最优档 ⭐ 与显存占满档 🔥
+两者的每音频小时成本。
 
 ## 七、方法的取舍与适用边界
 
-**隐含假设**：RTF-batch 曲线单峰（升→平/降），在 GPU batching 场景基本成立。
+**隐含假设**：显存随 batch 单调递增（到 OOM 为止）；显存不再随 batch 上涨即说明
+语音段被取空（段饥饿）。在 batched 解码场景基本成立。
 
 **优点**：
-- 无需扫全列表，弱卡上通常测 5~6 档即结束；
-- OOM 只作为边界处理，正常情况下远未 OOM 就已收敛。
+- 每台机器都测在「显存吃满」状态，强卡不会因音频/ batch 不足被低估；
+- OOM 与显存平台都作为明确的停止边界，全程自动、无需人工试参数；
+- 段饥饿自动加长音频，避免了「音频拍脑袋定长」的经验值问题。
 
-**局限**：
-- 分辨率受限于候选列表步长：若真实峰值在两档之间（如 16 与 24 之间的 20），
-  只能取到两者中较好者。对成本估算而言误差 <2%，可接受；
+**局限与注意**：
+- 音频越长、迭代越多，单轮扫描越久。32× 起步（约 8800s）通常足以喂满到 bs≈256；
+  可用 `--audio-multiplier` / `--runs` 调节耗时，用 `--max-iterations` /
+  `--max-audio-multiplier` 兜底防止无限增大。
+- 占满阈值 `--vram-target-frac`（默认 0.90）是「视为占满」的判定线，不追求恰好 100%
+  以留出碎片余量、避免不必要的 OOM 反复。
 - 本基准测的是**单进程、单音频流的离线吞吐**（分母为端到端墙钟时间、每档串行
-  重复）。生产上若多进程并发喂多个音频，实际机器利用率与成本可能更优，
-  本基准给出的是保守下界。
+  重复）。生产上若多进程并发喂多个音频，实际利用率与成本可能更优，本基准给出的
+  是保守下界。
+- 需要退回旧的「RTF 饱和提前停止、不追求占满」行为时，加 `--no-saturate`。
