@@ -1,5 +1,7 @@
 # faster-whisper ASR 成本基准（EC2 GPU 实例性价比）
 
+**简体中文** | [English](README.en.md)
+
 在不同 AWS EC2 GPU 实例（**G5 / G6 / G6e / G7 / G7e**）上，用 **faster-whisper large-v3**
 跑离线批量转写。全自动把 GPU **显存推到极限**（占满 ~90% 或直接 OOM 打爆），在此基础上
 测出 **RTF（实时率）**、**推理耗时**，再结合 **On-Demand 价格**算出**每音频小时成本**，
