@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# One-step environment setup: ffmpeg + venv + torch (CUDA 12.8 wheel) + faster-whisper
+# Works on G5/G6/G6e/G7/G7e (incl. Blackwell sm_100/sm_120, which needs the latest CTranslate2).
 # 一键环境搭建：ffmpeg + venv + torch(CUDA 12.8 wheel) + faster-whisper
 # 适用于 G5/G6/G6e/G7/G7e（含 Blackwell sm_100/sm_120，需最新 CTranslate2）。
 set -euo pipefail

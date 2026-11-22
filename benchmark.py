@@ -1,16 +1,33 @@
 #!/usr/bin/env python3
 """
+faster-whisper ASR cost benchmark · main entry point (adaptive VRAM-saturation edition)
+
+Runs on any EC2 GPU instance and fully automatically:
+  1. Detects the instance type / region / GPU
+  2. Starts at 20× the base audio, sweeps batch_size and keeps probing upward, pushing VRAM
+     to ~90% or blowing it up (OOM)
+  3. If VRAM can't be filled because there are too few speech segments (segment
+     starvation), automatically grows the audio and retries, until saturated or a cap is hit
+  4. Computes RTF (throughput), inference time, and cost per audio hour in the saturated state
+  5. Writes this instance's JSON + Markdown cost analysis report to results/
+
+Examples:
+  python benchmark.py                          # fully automatic (start at 20×, saturate VRAM)
+  python benchmark.py --price 2.52             # set the hourly price manually
+  python benchmark.py --audio-multiplier 64    # start at 64×
+  python benchmark.py --no-saturate            # legacy mode: early stop on RTF saturation
+
 faster-whisper ASR 成本基准 · 主入口（自适应显存占满版）
 
 在任意 EC2 GPU 实例上运行，全自动完成：
   1. 自动检测实例类型 / region / GPU
-  2. 从 base 音频的 32 倍起步，扫描 batch_size 并一路上探，把显存推到 ~90% 或打爆(OOM)
+  2. 从 base 音频的 20 倍起步，扫描 batch_size 并一路上探，把显存推到 ~90% 或打爆(OOM)
   3. 若显存因语音段不足无法占满（段饥饿），自动增大音频再试，直至占满或触及上限
   4. 在「占满」状态下计算 RTF（吞吐）、推理耗时与每音频小时成本
   5. 输出该实例的 JSON + Markdown 成本分析报告到 results/
 
 示例：
-  python benchmark.py                          # 全自动（32× 起步，占满显存）
+  python benchmark.py                          # 全自动（20× 起步，占满显存）
   python benchmark.py --price 2.52             # 手动指定时价
   python benchmark.py --audio-multiplier 64    # 从 64× 起步
   python benchmark.py --no-saturate            # 退回旧的「RTF 饱和提前停止」模式
@@ -67,6 +84,7 @@ def main():
     p.add_argument("--prices-file", default=os.path.join(HERE, "prices.json"))
     p.add_argument("--out-dir", default=os.path.join(HERE, "results"))
 
+    # Audio and adaptive-saturation options
     # 音频与自适应占满相关
     p.add_argument("--base-audio", default=DEFAULT_INPUT,
                    help="用于拼接的基准音频（自适应流程按倍数重新生成）")
@@ -111,6 +129,7 @@ def main():
     model = WhisperModel(args.model, device="cuda", compute_type=args.compute_type)
     pipeline = BatchedInferencePipeline(model=model)
 
+    # ---- Prepare audio: explicit file as-is, else generate by multiplier (adaptive growth) ----
     # ---- 准备音频：用户显式指定则直接用，否则按倍数生成并允许自适应增大 ----
     fixed_audio = args.audio is not None
     if fixed_audio:
@@ -124,12 +143,14 @@ def main():
         audio_path = DEFAULT_AUDIO
         multiplier = args.audio_multiplier
 
+    # Warm-up (with a small batch)
     # 预热（用较小 batch）
     def warmup(path):
         print("预热运行（不计入结果）...")
         transcribe_once(pipeline, path, batch_size=min(8, max(batch_sizes)),
                         language=language)
 
+    # ---- Adaptive loop: sweep -> if not saturated and starved, grow the audio -> re-sweep ----
     # ---- 自适应闭环：扫描 -> 未占满且段饥饿则增大音频 -> 重扫 ----
     iteration = 0
     results = []
@@ -147,7 +168,7 @@ def main():
 
         warmup(audio_path)
         print(f"[迭代 {iteration}] 开始扫描 batch_size：")
-        patience = 2  # 仅在非 saturate 模式生效
+        patience = 2  # only applies in non-saturate mode / 仅在非 saturate 模式生效
         results = sweep_batch_sizes(
             pipeline, audio_path, duration, batch_sizes, args.runs, language,
             early_stop_patience=patience, saturate=args.saturate,
@@ -158,6 +179,8 @@ def main():
               f"（利用率 {summary.vram_utilization:.0%}）  "
               f"{'已OOM打爆' if summary.oom else ('已占满' if summary.saturated else '未占满')}")
 
+        # Exit conditions: non-saturate mode, fixed audio, saturated, iteration cap reached,
+        # multiplier cap reached, or not segment-starved
         # 结束条件：非 saturate、固定音频、已饱和、达轮数上限、达倍数上限、或非段饥饿
         if not args.saturate or fixed_audio or summary.saturated:
             break
@@ -165,6 +188,8 @@ def main():
             print(f"[停止] 达到最大迭代轮数 {args.max_iterations}，仍未占满显存。")
             break
         if not summary.starved:
+            # VRAM still rises with batch but is below the threshold, and batch has been probed
+            # up to its cap: growing the audio usually doesn't help
             # 显存仍随 batch 上涨但未达阈值，且 batch 已探至上限：增大音频通常无益
             print("[停止] 显存未达阈值但也非段饥饿（batch 已探顶），停止。")
             break

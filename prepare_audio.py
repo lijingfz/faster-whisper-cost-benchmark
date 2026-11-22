@@ -1,5 +1,24 @@
 #!/usr/bin/env python3
 """
+Prepare the standard test audio: repeatedly concatenate a base audio file up to a target
+duration / multiplier, for fair cross-instance comparison.
+
+Why make it long: BatchedInferencePipeline uses VAD to split the audio into speech segments,
+then decodes them in parallel batches. large-v3 works in 30s windows; if the audio is too
+short it yields fewer segments than batch_size, so large batches "can't be filled" -- this
+neither measures the real throughput nor pushes VRAM to its physical limit (segment
+starvation). For cross-instance comparison, all machines just need to use the same audio
+(RTF does not depend on the absolute duration).
+
+Usage:
+  python prepare_audio.py                              # concat the bundled base audio to 20×
+  python prepare_audio.py --multiplier 64              # concat to 64× the base
+  python prepare_audio.py --input my.wav --target 900  # concat to a target duration (seconds)
+  python prepare_audio.py --repeat 10                  # set the repeat count directly
+
+benchmark.py's adaptive loop calls build_audio() from this file directly to regenerate
+longer audio during a run.
+
 准备标准测试音频：把一个基准音频重复拼接到目标时长/倍数，供跨实例公平对比。
 
 为什么要拼长：BatchedInferencePipeline 用 VAD 把音频切成语音段后按 batch 并行解码。
@@ -8,7 +27,7 @@ large-v3 按 30s 窗口工作，音频太短切出的段数少于 batch_size，�
 同一份音频即可（RTF 与绝对时长无关）。
 
 用法：
-  python prepare_audio.py                              # 用自带 base 音频拼到 32 倍
+  python prepare_audio.py                              # 用自带 base 音频拼到 20 倍
   python prepare_audio.py --multiplier 64              # 拼成 base 的 64 倍
   python prepare_audio.py --input my.wav --target 900  # 按目标时长(秒)拼接
   python prepare_audio.py --repeat 10                  # 直接指定重复次数
@@ -27,7 +46,9 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_INPUT = os.path.join(HERE, "audio", "base-sample.mp3")
 DEFAULT_OUTPUT = os.path.join(HERE, "audio", "benchmark-audio.mp3")
-DEFAULT_MULTIPLIER = 20  # 起始倍数：足以喂满大 batch，避免段饥饿
+# Starting multiplier: enough to fill large batches and avoid segment starvation
+# 起始倍数：足以喂满大 batch，避免段饥饿
+DEFAULT_MULTIPLIER = 20
 
 
 def duration(path: str) -> float:
@@ -39,7 +60,12 @@ def duration(path: str) -> float:
 
 
 def build_audio(input_path: str, output_path: str, repeat: int) -> float:
-    """把 input_path 无损拼接 repeat 次到 output_path，返回输出时长(秒)。
+    """Losslessly concatenate input_path `repeat` times into output_path; return duration (s).
+
+    Uses ffmpeg concat + stream copy: no re-encoding, no quality loss, and fast.
+    Can be called directly by benchmark.py's adaptive loop to regenerate longer audio mid-run.
+
+    把 input_path 无损拼接 repeat 次到 output_path，返回输出时长(秒)。
 
     使用 ffmpeg concat + stream copy，不重编码、无音质损失，速度快。
     可被 benchmark.py 的自适应流程直接调用以在运行中重新生成更长音频。
@@ -64,7 +90,10 @@ def build_audio(input_path: str, output_path: str, repeat: int) -> float:
 
 def resolve_repeat(base_s: float, multiplier: int | None,
                    target_s: float | None, repeat: int | None) -> int:
-    """按优先级 repeat > multiplier > target 解析出重复次数。"""
+    """Resolve the repeat count with priority repeat > multiplier > target.
+
+    按优先级 repeat > multiplier > target 解析出重复次数。
+    """
     if repeat:
         return max(1, int(repeat))
     if multiplier:

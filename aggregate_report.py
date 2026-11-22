@@ -1,5 +1,15 @@
 #!/usr/bin/env python3
 """
+Aggregate the single-instance result JSONs from multiple instances into a cross-instance
+cost comparison report.
+
+Usage:
+  # Collect each instance's results/<instance>.json into one directory, then:
+  python aggregate_report.py --results-dir results --out results/COST-COMPARISON.md
+
+Outputs a comparison table sorted ascending by "cost per audio hour", plus a
+cost-efficiency index (the cheapest instance = 1.00).
+
 汇总多台实例的单实例结果 JSON，生成跨实例成本对比报告。
 
 用法：
@@ -45,6 +55,7 @@ def main():
     if not data:
         raise SystemExit(f"在 {args.results_dir} 未找到任何单实例结果 JSON。")
 
+    # Entries with a cost go first, sorted ascending by cost; entries without a cost go last
     # 有成本的排前面并按成本升序；无成本的排后面
     def sort_key(d):
         c = d.get("cost_per_audio_hour_usd")
