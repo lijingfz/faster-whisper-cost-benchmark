@@ -84,7 +84,8 @@ python aggregate_report.py --results-dir results
 
 > For the exact RTF calculation and the adaptive VRAM-saturation / segment-starvation algorithm
 > (OOM boundary, VRAM plateau detection, automatic audio growth, etc.), see
-> [docs/RTF-LOGIC.md](docs/RTF-LOGIC.md) (in Chinese).
+> [docs/RTF-LOGIC.md](docs/RTF-LOGIC.md) (bilingual: English, with the Chinese original in
+> collapsible blocks).
 
 ---
 
