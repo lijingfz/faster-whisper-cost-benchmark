@@ -11,7 +11,7 @@ starvation). For cross-instance comparison, all machines just need to use the sa
 (RTF does not depend on the absolute duration).
 
 Usage:
-  python prepare_audio.py                              # concat the bundled base audio to 32×
+  python prepare_audio.py                              # concat the bundled base audio to 20×
   python prepare_audio.py --multiplier 64              # concat to 64× the base
   python prepare_audio.py --input my.wav --target 900  # concat to a target duration (seconds)
   python prepare_audio.py --repeat 10                  # set the repeat count directly
@@ -27,7 +27,7 @@ large-v3 按 30s 窗口工作，音频太短切出的段数少于 batch_size，�
 同一份音频即可（RTF 与绝对时长无关）。
 
 用法：
-  python prepare_audio.py                              # 用自带 base 音频拼到 32 倍
+  python prepare_audio.py                              # 用自带 base 音频拼到 20 倍
   python prepare_audio.py --multiplier 64              # 拼成 base 的 64 倍
   python prepare_audio.py --input my.wav --target 900  # 按目标时长(秒)拼接
   python prepare_audio.py --repeat 10                  # 直接指定重复次数

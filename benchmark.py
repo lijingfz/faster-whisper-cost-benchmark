@@ -4,7 +4,7 @@ faster-whisper ASR cost benchmark · main entry point (adaptive VRAM-saturation 
 
 Runs on any EC2 GPU instance and fully automatically:
   1. Detects the instance type / region / GPU
-  2. Starts at 32× the base audio, sweeps batch_size and keeps probing upward, pushing VRAM
+  2. Starts at 20× the base audio, sweeps batch_size and keeps probing upward, pushing VRAM
      to ~90% or blowing it up (OOM)
   3. If VRAM can't be filled because there are too few speech segments (segment
      starvation), automatically grows the audio and retries, until saturated or a cap is hit
@@ -12,7 +12,7 @@ Runs on any EC2 GPU instance and fully automatically:
   5. Writes this instance's JSON + Markdown cost analysis report to results/
 
 Examples:
-  python benchmark.py                          # fully automatic (start at 32×, saturate VRAM)
+  python benchmark.py                          # fully automatic (start at 20×, saturate VRAM)
   python benchmark.py --price 2.52             # set the hourly price manually
   python benchmark.py --audio-multiplier 64    # start at 64×
   python benchmark.py --no-saturate            # legacy mode: early stop on RTF saturation
@@ -21,13 +21,13 @@ faster-whisper ASR 成本基准 · 主入口（自适应显存占满版）
 
 在任意 EC2 GPU 实例上运行，全自动完成：
   1. 自动检测实例类型 / region / GPU
-  2. 从 base 音频的 32 倍起步，扫描 batch_size 并一路上探，把显存推到 ~90% 或打爆(OOM)
+  2. 从 base 音频的 20 倍起步，扫描 batch_size 并一路上探，把显存推到 ~90% 或打爆(OOM)
   3. 若显存因语音段不足无法占满（段饥饿），自动增大音频再试，直至占满或触及上限
   4. 在「占满」状态下计算 RTF（吞吐）、推理耗时与每音频小时成本
   5. 输出该实例的 JSON + Markdown 成本分析报告到 results/
 
 示例：
-  python benchmark.py                          # 全自动（32× 起步，占满显存）
+  python benchmark.py                          # 全自动（20× 起步，占满显存）
   python benchmark.py --price 2.52             # 手动指定时价
   python benchmark.py --audio-multiplier 64    # 从 64× 起步
   python benchmark.py --no-saturate            # 退回旧的「RTF 饱和提前停止」模式
