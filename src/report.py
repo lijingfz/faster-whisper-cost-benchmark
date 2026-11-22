@@ -1,4 +1,7 @@
-"""单实例结果的 JSON / Markdown 输出。"""
+"""JSON / Markdown output for single-instance results.
+
+单实例结果的 JSON / Markdown 输出。
+"""
 
 from __future__ import annotations
 
@@ -44,6 +47,7 @@ def build_result_dict(
 ) -> dict:
     def cost_of(r: Optional[BatchResult]) -> Optional[float]:
         if r and r.rtf and price_per_hour is not None:
+            # $/audio-hour = hourly price / RTF (RTF = audio hours transcribed per wall-clock hour)
             # $/audio-hour = 时价 / RTF（RTF = 每墙钟小时可转写的音频小时数）
             return price_per_hour / r.rtf
         return None
@@ -152,6 +156,7 @@ def write_markdown(data: dict, out_path: str) -> None:
     lines.append(f"| 每档计时次数 | {data['runs_per_size']}（取中位数）|")
     lines.append("")
 
+    # VRAM saturation status
     # 显存占满情况
     lines.append("## 显存占满情况")
     lines.append("")

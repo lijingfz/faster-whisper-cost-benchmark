@@ -1,4 +1,13 @@
-"""基准核心：显存采样、单次转写计时、batch_size 扫描。
+"""Benchmark core: VRAM sampling, single-transcription timing, and batch_size sweeping.
+
+Two optimization targets are supported (both can be derived from the same data):
+- Cost-optimal: $/audio-hour = hourly price / RTF, so the batch size with the highest RTF has
+  the lowest unit cost.
+- VRAM saturation (saturate mode): push batch_size all the way up to OOM or a VRAM plateau,
+  so the measured throughput reflects a truly fully loaded GPU rather than a false plateau
+  caused by too few speech segments.
+
+基准核心：显存采样、单次转写计时、batch_size 扫描。
 
 支持两种寻优取向（同一份数据可同时得出）：
 - 成本最优：$/audio-hour = 时价 / RTF，因此 RTF 最大的档位单位成本最低。
@@ -18,7 +27,12 @@ import torch
 
 
 class GpuMemSampler:
-    """后台线程按固定间隔采样设备已用显存，记录峰值（GiB）。
+    """Sample used device VRAM at a fixed interval in a background thread; record the peak (GiB).
+
+    Uses torch.cuda.mem_get_info() for a device-level query, which captures VRAM that
+    CTranslate2 allocates outside torch's caching allocator.
+
+    后台线程按固定间隔采样设备已用显存，记录峰值（GiB）。
 
     用 torch.cuda.mem_get_info() 做设备级查询，可捕获 CTranslate2 在 torch
     缓存分配器之外分配的显存。"""
@@ -60,13 +74,18 @@ def _is_oom(err: Exception) -> bool:
 
 
 def transcribe_once(pipeline, audio_path: str, batch_size: int, language: Optional[str]):
-    """完整消费 segments 生成器（否则不会真正计算），返回 (耗时秒, 文本开头)。"""
+    """Fully consume the lazy segments generator; return (elapsed seconds, leading text).
+
+    The generator must be fully iterated, otherwise no transcription is actually computed.
+
+    完整消费 segments 生成器（否则不会真正计算），返回 (耗时秒, 文本开头)。
+    """
     torch.cuda.synchronize()
     t0 = time.perf_counter()
     segments, _info = pipeline.transcribe(
         audio_path, batch_size=batch_size, language=language
     )
-    text_parts = [seg.text for seg in segments]  # 迭代触发实际转写
+    text_parts = [seg.text for seg in segments]  # iterating runs the transcription / 迭代触发实际转写
     torch.cuda.synchronize()
     elapsed = time.perf_counter() - t0
     return elapsed, "".join(text_parts).strip()
@@ -85,13 +104,28 @@ class BatchResult:
 
 @dataclass
 class SweepSummary:
-    """一轮扫描（固定音频）的汇总，用于自适应闭环决策。"""
-    oom: bool = False                 # 是否触发过 OOM（显存被打爆）
-    peak_vram_gib: float = 0.0        # 本轮所有档位的最大峰值显存
-    vram_utilization: float = 0.0     # peak_vram / 总显存
-    saturated: bool = False           # OOM 或 峰值显存 >= 目标阈值
-    vram_climbing: bool = False       # 最大 batch 仍在增大显存（可继续上探 batch）
-    starved: bool = False             # 未饱和且显存已平台 => 语音段不足，需增大音频
+    """Summary of one sweep round (fixed audio), used for adaptive-loop decisions.
+
+    一轮扫描（固定音频）的汇总，用于自适应闭环决策。
+    """
+    # Whether an OOM was hit (VRAM blown)
+    # 是否触发过 OOM（显存被打爆）
+    oom: bool = False
+    # Max peak VRAM across all batch sizes in this round
+    # 本轮所有档位的最大峰值显存
+    peak_vram_gib: float = 0.0
+    # peak_vram / total VRAM
+    # peak_vram / 总显存
+    vram_utilization: float = 0.0
+    # OOM, or peak VRAM >= target threshold
+    # OOM 或 峰值显存 >= 目标阈值
+    saturated: bool = False
+    # VRAM still rising at the largest batch (larger batches can still be probed)
+    # 最大 batch 仍在增大显存（可继续上探 batch）
+    vram_climbing: bool = False
+    # Not saturated and VRAM has plateaued => too few speech segments, the audio must grow
+    # 未饱和且显存已平台 => 语音段不足，需增大音频
+    starved: bool = False
     max_ok_batch: Optional[int] = None
 
 
@@ -108,7 +142,23 @@ def sweep_batch_sizes(
     max_batch: int = 1024,
     vram_plateau_epsilon: float = 0.03,
 ) -> List[BatchResult]:
-    """依次测试各 batch_size。
+    """Test each batch_size in turn.
+
+    Normal mode:
+      - Time each batch size `runs` times and take the median; compute RTF and peak VRAM.
+      - On OOM: mark that size as oom and stop growing (anything larger will OOM too).
+      - Early stop on saturation: stop once the relative RTF gain is < epsilon for
+        early_stop_patience consecutive batch sizes.
+
+    saturate mode (saturate=True):
+      - RTF-saturation early stop is disabled; the goal is to push VRAM to its limit.
+      - Dynamic upward probing: after the given candidates are swept, if VRAM at the largest
+        size is still rising relative to the previous size (> vram_plateau_epsilon),
+        automatically append batch = previous × 2, until OOM, VRAM stops rising (plateau),
+        or max_batch is reached.
+      - On OOM: mark it and stop (VRAM has been blown, i.e. the hardware limit is reached).
+
+    依次测试各 batch_size。
 
     普通模式：
       - 每档计时 runs 次取中位数，算 RTF 与峰值显存。
@@ -163,6 +213,7 @@ def sweep_batch_sizes(
         results.append(res)
 
         if saturate:
+            # Dynamic probing: only at the end of the queue, decide whether to add a larger batch
             # 动态上探：仅当已到当前队列末尾时，决定是否追加更大 batch
             if not queue:
                 climbing = (prev_vram is None
@@ -171,6 +222,7 @@ def sweep_batch_sizes(
                 if climbing and nxt <= max_batch:
                     queue.append(nxt)
                 else:
+                    # VRAM no longer rises with batch (plateau) or cap reached => stop probing
                     # 显存不再随 batch 上涨（平台）或触顶 => 停止上探
                     if not climbing:
                         print(f"  显存在 batch={bs} 达到平台（增大 batch 不再涨显存），"
@@ -179,6 +231,7 @@ def sweep_batch_sizes(
             prev_vram = res.peak_vram_gib
             continue
 
+        # Normal mode: early stop on RTF saturation
         # 普通模式：RTF 饱和提前停止
         if res.rtf and res.rtf > best_rtf * (1 + early_stop_epsilon):
             best_rtf = max(best_rtf, res.rtf)
@@ -199,7 +252,12 @@ def summarize_sweep(
     vram_target_frac: float = 0.90,
     vram_plateau_epsilon: float = 0.03,
 ) -> SweepSummary:
-    """从一轮扫描结果汇总显存饱和状态，供自适应闭环判断是否需要增大音频。"""
+    """Summarize the VRAM saturation state of one sweep round.
+
+    Used by the adaptive loop to decide whether the audio needs to grow.
+
+    从一轮扫描结果汇总显存饱和状态，供自适应闭环判断是否需要增大音频。
+    """
     s = SweepSummary()
     s.oom = any(r.status == "oom" for r in results)
     vrams = [r.peak_vram_gib for r in results if r.peak_vram_gib]
@@ -212,6 +270,7 @@ def summarize_sweep(
 
     s.saturated = s.oom or (s.vram_utilization >= vram_target_frac)
 
+    # Check whether VRAM is still rising at the largest batch (compare the last two ok sizes)
     # 判断最大 batch 处显存是否仍在上涨（用最后两个 ok 档比较）
     if len(ok) >= 2:
         ok_sorted = sorted(ok, key=lambda r: r.batch_size)
@@ -220,13 +279,18 @@ def summarize_sweep(
     else:
         s.vram_climbing = True
 
+    # Not saturated and VRAM has plateaued (no longer rising with batch) => too few speech
+    # segments (segment starvation), so the audio must grow
     # 未饱和 且 显存已平台（不再随 batch 上涨）=> 语音段不足（段饥饿），需增大音频
     s.starved = (not s.saturated) and (not s.vram_climbing)
     return s
 
 
 def pick_optimal(results: List[BatchResult]) -> Optional[BatchResult]:
-    """成本最优 = RTF 最大的成功档位（$/audio-hour = 时价 / RTF）。"""
+    """Cost-optimal = the successful batch size with the highest RTF ($/audio-hour = price / RTF).
+
+    成本最优 = RTF 最大的成功档位（$/audio-hour = 时价 / RTF）。
+    """
     ok = [r for r in results if r.status == "ok" and r.rtf]
     if not ok:
         return None
@@ -234,7 +298,12 @@ def pick_optimal(results: List[BatchResult]) -> Optional[BatchResult]:
 
 
 def pick_saturating(results: List[BatchResult]) -> Optional[BatchResult]:
-    """显存占满档 = 峰值显存最大的成功档位（用于报告占满时的 RTF/耗时/成本）。"""
+    """VRAM-saturating size = the successful batch size with the highest peak VRAM.
+
+    Used to report RTF / inference time / cost at full VRAM.
+
+    显存占满档 = 峰值显存最大的成功档位（用于报告占满时的 RTF/耗时/成本）。
+    """
     ok = [r for r in results if r.status == "ok" and r.peak_vram_gib]
     if not ok:
         return None

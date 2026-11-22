@@ -1,4 +1,13 @@
-"""On-Demand 价格获取，三级回退（优先级从高到低）：
+"""On-Demand price lookup with a three-level fallback (highest to lowest priority):
+
+1. Explicit --price passed on the CLI
+2. AWS Pricing API (requires boto3 + credentials + network; the Pricing API endpoints are in
+   us-east-1 / ap-south-1)
+3. Built-in prices.json (offline fallback, can be updated manually)
+
+Returns (price_per_hour, source). Returns (None, "unavailable") if every level fails.
+
+On-Demand 价格获取，三级回退（优先级从高到低）：
 
 1. CLI 显式传入 --price
 2. AWS Pricing API（需 boto3 + 凭证 + 网络；Pricing API 端点在 us-east-1 / ap-south-1）
@@ -13,6 +22,7 @@ import json
 import os
 from typing import Optional, Tuple
 
+# region code -> full location name used by the Pricing API
 # region code -> Pricing API 使用的 location 全称
 _REGION_TO_LOCATION = {
     "us-east-1": "US East (N. Virginia)",
@@ -36,7 +46,10 @@ _REGION_TO_LOCATION = {
 
 
 def _from_pricing_api(instance_type: str, region: str) -> Optional[float]:
-    """通过 AWS Pricing API 查 Linux/Shared/On-Demand 单价。失败返回 None。"""
+    """Look up the Linux/Shared/On-Demand unit price via the AWS Pricing API; None on failure.
+
+    通过 AWS Pricing API 查 Linux/Shared/On-Demand 单价。失败返回 None。
+    """
     location = _REGION_TO_LOCATION.get(region)
     if not location:
         return None
@@ -45,6 +58,7 @@ def _from_pricing_api(instance_type: str, region: str) -> Optional[float]:
     except ImportError:
         return None
     try:
+        # The Pricing API only has endpoints in us-east-1 / ap-south-1
         # Pricing API 仅在 us-east-1 / ap-south-1 有端点
         client = boto3.client("pricing", region_name="us-east-1")
         resp = client.get_products(
@@ -76,7 +90,10 @@ def _from_pricing_api(instance_type: str, region: str) -> Optional[float]:
 
 def _from_prices_json(instance_type: str, region: str, prices_file: str
                       ) -> Optional[float]:
-    """从内置 prices.json 读取。优先精确匹配 region，否则用 default_region。"""
+    """Read from the built-in prices.json; prefer an exact region match, else default_region.
+
+    从内置 prices.json 读取。优先精确匹配 region，否则用 default_region。
+    """
     if not os.path.exists(prices_file):
         return None
     try:
@@ -93,6 +110,7 @@ def _from_prices_json(instance_type: str, region: str, prices_file: str
     default_region = data.get("default_region")
     if default_region and default_region in by_region:
         return float(by_region[default_region])
+    # Last resort: take the price of any known region
     # 退而求其次：取任意一个已知区域的价格
     if by_region:
         return float(next(iter(by_region.values())))
@@ -105,7 +123,10 @@ def get_on_demand_price(
     prices_file: str,
     cli_price: Optional[float] = None,
 ) -> Tuple[Optional[float], str]:
-    """按三级优先级返回 (每小时美元价, 来源标签)。"""
+    """Return (USD price per hour, source label) following the three-level priority.
+
+    按三级优先级返回 (每小时美元价, 来源标签)。
+    """
     if cli_price is not None:
         return cli_price, "cli_override"
     api_price = _from_pricing_api(instance_type, region)

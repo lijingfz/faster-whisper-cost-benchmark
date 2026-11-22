@@ -1,4 +1,12 @@
-"""实例与 GPU 信息检测。
+"""Instance and GPU information detection.
+
+- EC2 instance type / region: prefer IMDSv2 (the EC2 instance metadata service); on failure,
+  fall back to environment variables or "unknown".
+- GPU: read the name, compute capability, and total VRAM via torch.
+
+All network calls use a short timeout, so non-EC2 environments won't hang.
+
+实例与 GPU 信息检测。
 
 - EC2 实例类型 / region：优先 IMDSv2（EC2 元数据服务），失败则回退到环境变量或 "unknown"。
 - GPU：通过 torch 读取名称、compute capability、显存总量。
@@ -14,7 +22,7 @@ from dataclasses import dataclass, asdict
 from typing import Optional
 
 _IMDS_BASE = "http://169.254.169.254/latest"
-_IMDS_TIMEOUT = 1.0  # 秒，非 EC2 环境快速失败
+_IMDS_TIMEOUT = 1.0  # seconds; fail fast outside EC2 / 秒，非 EC2 环境快速失败
 
 
 def _imds_token() -> Optional[str]:
@@ -41,7 +49,10 @@ def _imds_get(path: str, token: Optional[str]) -> Optional[str]:
 
 
 def get_instance_type(override: Optional[str] = None) -> str:
-    """返回 EC2 实例类型，如 'g6.2xlarge'。检测不到返回 'unknown'。"""
+    """Return the EC2 instance type, e.g. 'g6.2xlarge'; 'unknown' if it can't be detected.
+
+    返回 EC2 实例类型，如 'g6.2xlarge'。检测不到返回 'unknown'。
+    """
     if override:
         return override
     if os.environ.get("INSTANCE_TYPE"):
@@ -51,7 +62,10 @@ def get_instance_type(override: Optional[str] = None) -> str:
 
 
 def get_region(override: Optional[str] = None) -> str:
-    """返回 region，如 'us-east-1'。检测不到返回 'unknown'。"""
+    """Return the region, e.g. 'us-east-1'; 'unknown' if it can't be detected.
+
+    返回 region，如 'us-east-1'。检测不到返回 'unknown'。
+    """
     if override:
         return override
     if os.environ.get("AWS_REGION"):
@@ -63,7 +77,7 @@ def get_region(override: Optional[str] = None) -> str:
 @dataclass
 class GpuInfo:
     name: str
-    compute_capability: str  # 如 "sm_89"
+    compute_capability: str  # e.g. "sm_89" / 如 "sm_89"
     total_vram_gib: float
     device_count: int
 
