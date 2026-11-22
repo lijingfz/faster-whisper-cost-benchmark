@@ -410,8 +410,8 @@ basically holds for batched decoding.
   picking an audio length by gut feeling.
 
 **Limitations and caveats**:
-- The longer the audio and the more iterations, the longer each sweep takes. Starting at 32×
-  (about 8800s) is usually enough to feed up to bs≈256; use `--audio-multiplier` / `--runs`
+- The longer the audio and the more iterations, the longer each sweep takes. Starting at 20×
+  (about 5500s) is usually enough to feed up to bs≈256; use `--audio-multiplier` / `--runs`
   to tune the runtime, and `--max-iterations` / `--max-audio-multiplier` as backstops against
   unbounded growth.
 - The saturation threshold `--vram-target-frac` (default 0.90) is the line at which VRAM
@@ -436,7 +436,7 @@ basically holds for batched decoding.
 - 段饥饿自动加长音频，避免了「音频拍脑袋定长」的经验值问题。
 
 **局限与注意**：
-- 音频越长、迭代越多，单轮扫描越久。32× 起步（约 8800s）通常足以喂满到 bs≈256；
+- 音频越长、迭代越多，单轮扫描越久。20× 起步（约 5500s）通常足以喂满到 bs≈256；
   可用 `--audio-multiplier` / `--runs` 调节耗时，用 `--max-iterations` /
   `--max-audio-multiplier` 兜底防止无限增大。
 - 占满阈值 `--vram-target-frac`（默认 0.90）是「视为占满」的判定线，不追求恰好 100%
