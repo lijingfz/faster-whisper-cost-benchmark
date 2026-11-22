@@ -70,7 +70,8 @@ python aggregate_report.py --results-dir results
 5. **成本与报告**：算出 $/audio-hour、每 1000 音频小时成本，输出 JSON + Markdown。
 
 > RTF 的精确计算方式、显存占满与段饥饿的自适应算法（OOM 边界、显存平台判定、
-> 音频自动增大等）详见 [docs/RTF-LOGIC.md](docs/RTF-LOGIC.md)。
+> 音频自动增大等）详见 [docs/RTF-LOGIC.md](docs/RTF-LOGIC.md)（中英双语：英文正文，
+> 各节附中文原文折叠块）。
 
 ---
 
